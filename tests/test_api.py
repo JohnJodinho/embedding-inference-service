@@ -152,7 +152,7 @@ def test_embeddings_rate_limit_429(client, rag_headers, monkeypatch):
     assert response.status_code == 429
 
 
-def test_metrics_requires_auth(client):
+def test_metrics_requires_auth(client, rag_headers):
     response = client.get("/metrics")
     assert response.status_code == 401
 

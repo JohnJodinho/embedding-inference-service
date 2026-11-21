@@ -73,8 +73,11 @@ def authenticate(request: Request, client_id: str | None) -> str:
 class _TokenBucket:
     capacity: int
     fill_rate: float  # tokens per second
-    tokens: float = field(default=0.0)
+    tokens: float = field(init=False)
     last: float = field(default_factory=time.time)
+
+    def __post_init__(self) -> None:
+        self.tokens = float(self.capacity)
 
     def consume(self, tokens: int = 1) -> bool:
         now = time.time()
