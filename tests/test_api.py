@@ -3,6 +3,26 @@
 from app.config import get_model_config
 
 
+def test_openapi_documents_bearer_authentication():
+    from app.main import app
+
+    schema = app.openapi()
+    scheme = schema["components"]["securitySchemes"]["BearerAuth"]
+    assert scheme["type"] == "http"
+    assert scheme["scheme"] == "bearer"
+
+    protected_routes = (
+        ("/v1/models", "get"),
+        ("/v1/embeddings", "post"),
+        ("/metrics", "get"),
+    )
+    for path, method in protected_routes:
+        assert schema["paths"][path][method]["security"] == [{"BearerAuth": []}]
+
+    for path in ("/health/live", "/health/ready"):
+        assert "security" not in schema["paths"][path]["get"]
+
+
 def test_models_list(client, rag_headers):
     response = client.get("/v1/models", headers=rag_headers)
     assert response.status_code == 200

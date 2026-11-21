@@ -37,6 +37,8 @@ Two distinct client secrets are configured as Hugging Face Space Secrets:
 - `ZIT_API_KEY` — for the ZIT assistant (BGE)
 
 Requests present `Authorization: Bearer <key>`. Health endpoints are unauthenticated.
+In `/docs`, click **Authorize** and enter either API key; Swagger UI adds the
+`Bearer` prefix for requests to protected endpoints.
 
 ## Deployment
 

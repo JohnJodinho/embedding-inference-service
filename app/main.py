@@ -12,8 +12,9 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Final
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.security import HTTPBearer
 
 from .config import MODEL_REGISTRY, get_model_config, settings
 from .logging import log
@@ -28,6 +29,11 @@ from .security import (
 )
 
 app: Final[FastAPI] = FastAPI(title="Embedding Inference Service", version="1.0.0")
+bearer_auth: Final[HTTPBearer] = HTTPBearer(
+    scheme_name="BearerAuth",
+    description="Use a configured RAG_API_KEY or ZIT_API_KEY.",
+    auto_error=False,
+)
 
 
 def error_response(status_code: int, code: str, retry_after: int | None = None) -> JSONResponse:
@@ -68,7 +74,7 @@ async def ready() -> JSONResponse:
     return JSONResponse(status_code=503, content={"status": "not_ready"})
 
 
-@app.get("/v1/models")
+@app.get("/v1/models", dependencies=[Depends(bearer_auth)])
 async def list_models(request: Request) -> JSONResponse:
     """Return supported model aliases and dimensions. Authenticated."""
     client_label = authenticate(request, request.query_params.get("client_id"))
@@ -91,7 +97,7 @@ async def list_models(request: Request) -> JSONResponse:
     )
 
 
-@app.post("/v1/embeddings")
+@app.post("/v1/embeddings", dependencies=[Depends(bearer_auth)])
 async def embeddings(request: Request) -> JSONResponse:
     """Embed one or many texts. Authenticated."""
     start = time.monotonic()
@@ -251,7 +257,7 @@ async def embeddings(request: Request) -> JSONResponse:
     )
 
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(bearer_auth)])
 async def metrics_endpoint(request: Request) -> PlainTextResponse:
     """Lightweight process-local metrics. Authenticated."""
     authenticate(request, None)
