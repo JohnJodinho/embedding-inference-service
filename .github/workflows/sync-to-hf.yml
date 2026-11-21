@@ -28,11 +28,14 @@ jobs:
           set -e
           HF_REMOTE="https://x-access-token:${HF_TOKEN}@huggingface.co/spaces/JohnAlbarkaIbrahim/SentimentScope.git"
           git remote add hf "$HF_REMOTE" 2>/dev/null || true
-          # Align with any existing Space history so a normal (non-force) push works.
           git fetch hf main 2>/dev/null || true
           if git rev-parse --verify --quiet refs/remotes/hf/main; then
-            git merge --allow-unrelated-histories \
+            # First-time alignment: the Space already has its own history.
+            # GitHub main is the source of truth; on any conflict keep the
+            # GitHub version (-X ours). After this alignment, later pushes
+            # are normal fast-forwards and no force push is needed.
+            git merge --allow-unrelated-histories -X ours \
               -m "build: align with existing Hugging Face Space history" \
-              refs/remotes/hf/main || true
+              refs/remotes/hf/main
           fi
           git push hf HEAD:main
