@@ -93,12 +93,14 @@ def get_model(alias: str) -> ModelHandle:
 
 def _to_vector(value) -> list[float]:
     """Normalise a tensor/ndarray result into a list of floats."""
-    import numpy as np
-
-    if isinstance(value, np.ndarray):
-        return [float(x) for x in value.tolist()]
     if hasattr(value, "tolist"):
-        return [float(x) for x in value.tolist()]
+        value = value.tolist()
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], list):
+        value = value[0]
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+    if len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = value[0]
     return [float(x) for x in value]
 
 

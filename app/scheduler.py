@@ -193,13 +193,20 @@ class InferenceScheduler:
         from .models import ModelNotReadyError, encode_texts, get_model, validate_vector
 
         texts: list[str] = []
+        ranges: list[tuple[_RequestItem, int, int]] = []
         for item, _idx in entries:
+            start = len(texts)
             try:
-                prepared = prepare_input(alias, item.input_type, item.texts[0])
+                prepared = [
+                    prepare_input(alias, item.input_type, text)
+                    for text in item.texts
+                ]
             except Exception as exc:  # noqa: BLE001
-                self._fail_future(entries, exc)
+                if not item.future.done():
+                    item.future.set_exception(exc)
                 return
-            texts.append(prepared)
+            texts.extend(prepared)
+            ranges.append((item, start, len(texts)))
 
         t0 = time.monotonic()
         try:
@@ -223,10 +230,16 @@ class InferenceScheduler:
 
         expected_dims = get_model_config(alias)["dimensions"]
         try:
-            for (item, _idx), vector in zip(entries, vectors):
-                validate_vector(vector, expected_dims)
+            if len(vectors) != len(texts):
+                raise ValueError(
+                    f"Encoder returned {len(vectors)} vectors for {len(texts)} texts"
+                )
+            for item, start, end in ranges:
+                item_vectors = vectors[start:end]
+                for vector in item_vectors:
+                    validate_vector(vector, expected_dims)
                 if not item.future.done():
-                    item.future.set_result(vector)
+                    item.future.set_result(item_vectors)
             metrics.inc_embeddings(len(vectors))
             log.info(
                 "scheduler.batch_done",

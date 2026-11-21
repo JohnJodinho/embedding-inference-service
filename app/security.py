@@ -117,7 +117,7 @@ rate_limiter: Final[RateLimiter] = RateLimiter()
 def validate_request_size(body_bytes: int) -> None:
     if body_bytes > settings.max_request_bytes:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="request_too_large",
         )
 

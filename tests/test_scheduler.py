@@ -86,3 +86,43 @@ def test_pick_nonblocking_only_one_non_empty(empty_scheduler):
         )()
     )
     assert sched._pick_nonblocking() == "minilm-384-v1"
+
+
+def test_encode_resolves_all_texts_for_one_request(empty_scheduler, monkeypatch):
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    item = type(
+        "_",
+        (),
+        {
+            "texts": ["first", "second"],
+            "normalize_embeddings": False,
+            "input_type": None,
+            "future": future,
+        },
+    )()
+
+    import app.models as models_module
+
+    monkeypatch.setattr(models_module, "get_model", lambda alias: object())
+    monkeypatch.setattr(
+        models_module,
+        "encode_texts",
+        lambda alias, texts, normalize_embeddings: [
+            [float(index)] * 384
+            for index, _text in enumerate(texts)
+        ],
+    )
+
+    async def run():
+        await empty_scheduler._encode_and_resolve(
+            "minilm-384-v1",
+            [(item, 0)],
+            False,
+        )
+
+    loop.run_until_complete(run())
+    assert future.done()
+    result = future.result()
+    assert len(result) == 2
+    assert len(result[0]) == 384
