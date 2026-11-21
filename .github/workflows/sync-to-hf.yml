@@ -16,6 +16,7 @@ jobs:
       - name: Check out GitHub source
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Configure Git
@@ -29,15 +30,5 @@ jobs:
         run: |
           set -e
           HF_REMOTE="https://x-access-token:${HF_TOKEN}@huggingface.co/spaces/JohnAlbarkaIbrahim/SentimentScope.git"
-          git remote add hf "$HF_REMOTE" 2>/dev/null || true
-          git fetch hf main 2>/dev/null || true
-          if git rev-parse --verify --quiet refs/remotes/hf/main; then
-            # First-time alignment: the Space already has its own history.
-            # GitHub main is the source of truth; on any conflict keep the
-            # GitHub version (-X ours). After this alignment, later pushes
-            # are normal fast-forwards and no force push is needed.
-            git merge --allow-unrelated-histories -X ours \
-              -m "build: align with existing Hugging Face Space history" \
-              refs/remotes/hf/main
-          fi
-          git push hf HEAD:main
+          git remote add hf "$HF_REMOTE"
+          git push --force hf HEAD:main
