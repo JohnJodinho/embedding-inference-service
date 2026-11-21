@@ -7,6 +7,7 @@ models are actually available (i.e. during the Hugging Face Docker build).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 import pytest
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 import app.models as models_module
+import app.security as security_module
 from app.config import settings
 
 _TEST_RAG_KEY: Final[str] = "rag-test-key"
@@ -51,11 +53,15 @@ class _FakeScheduler:
 
 @pytest.fixture(autouse=True)
 def _set_test_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings.rag_api_key = _TEST_RAG_KEY
-    settings.zit_api_key = _TEST_ZIT_KEY
-    yield
-    settings.rag_api_key = ""
-    settings.zit_api_key = ""
+    monkeypatch.setattr(
+        security_module,
+        "settings",
+        replace(
+            settings,
+            rag_api_key=_TEST_RAG_KEY,
+            zit_api_key=_TEST_ZIT_KEY,
+        ),
+    )
 
 
 @pytest.fixture

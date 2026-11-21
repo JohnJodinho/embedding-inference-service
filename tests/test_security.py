@@ -1,5 +1,8 @@
 """Authentication, rate limiting and input validation tests."""
 
+from dataclasses import replace
+
+import app.security as security_module
 from app.security import (
     RateLimiter,
     authenticate,
@@ -8,7 +11,6 @@ from app.security import (
     validate_request_size,
     validate_texts,
 )
-from app.config import settings
 
 
 def test_constant_time_compare_same_and_different():
@@ -16,16 +18,16 @@ def test_constant_time_compare_same_and_different():
     assert constant_time_compare("secret", "different") is False
 
 
-def test_authenticate_rag_key():
+def test_authenticate_rag_key(rag_headers):
     class FakeRequest:
-        headers = {"authorization": f"Bearer {settings.rag_api_key}"}
+        headers = {"authorization": rag_headers["Authorization"]}
 
     assert authenticate(FakeRequest(), None) == "rag"
 
 
-def test_authenticate_zit_key():
+def test_authenticate_zit_key(zit_headers):
     class FakeRequest:
-        headers = {"authorization": f"Bearer {settings.zit_api_key}"}
+        headers = {"authorization": zit_headers["Authorization"]}
 
     assert authenticate(FakeRequest(), None) == "zit"
 
@@ -91,7 +93,11 @@ def test_validate_texts_empty():
 
 
 def test_validate_texts_too_many(monkeypatch):
-    monkeypatch.setattr(settings, "max_texts_per_request", 2)
+    monkeypatch.setattr(
+        security_module,
+        "settings",
+        replace(security_module.settings, max_texts_per_request=2),
+    )
     from fastapi import HTTPException
 
     try:
@@ -103,7 +109,11 @@ def test_validate_texts_too_many(monkeypatch):
 
 
 def test_validate_texts_too_long(monkeypatch):
-    monkeypatch.setattr(settings, "max_chars_per_text", 5)
+    monkeypatch.setattr(
+        security_module,
+        "settings",
+        replace(security_module.settings, max_chars_per_text=5),
+    )
     from fastapi import HTTPException
 
     try:
