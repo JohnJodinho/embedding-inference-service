@@ -1,4 +1,4 @@
-name: Clear Hugging Face Space
+name: Sync to Hugging Face Space
 
 on:
   push:
@@ -10,18 +10,21 @@ permissions:
 
 jobs:
   sync:
-    name: Clear HF Space contents
+    name: Sync GitHub main to HF Space
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out GitHub main
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Configure Git
         run: |
           git config user.name "GitHub Actions"
           git config user.email "github-actions@github.com"
 
-      - name: Replace HF main with an empty tree
+      - name: Replace HF main with GitHub main
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -29,6 +32,4 @@ jobs:
           : "${HF_TOKEN:?HF_TOKEN secret is required}"
           HF_REMOTE="https://x-access-token:${HF_TOKEN}@huggingface.co/spaces/JohnAlbarkaIbrahim/SentimentScope.git"
           git remote add hf "$HF_REMOTE"
-          EMPTY_TREE="$(git mktree </dev/null)"
-          EMPTY_COMMIT="$(printf 'chore: clear Hugging Face Space\n' | git commit-tree "$EMPTY_TREE")"
-          git push --force hf "$EMPTY_COMMIT:main"
+          git push --force hf HEAD:main
