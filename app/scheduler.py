@@ -190,7 +190,13 @@ class InferenceScheduler:
         normalize_embeddings: bool,
     ) -> None:
         from .config import get_model_config
-        from .models import ModelNotReadyError, encode_texts, get_model, validate_vector
+        from .models import (
+            ModelNotReadyError,
+            encode_texts,
+            get_model,
+            prepare_input,
+            validate_vector,
+        )
 
         texts: list[str] = []
         ranges: list[tuple[_RequestItem, int, int]] = []
