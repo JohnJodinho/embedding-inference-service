@@ -118,6 +118,7 @@ def test_embeddings_bge_requires_input_type(client, zit_headers):
         json={"model": "bge-base-768-v1", "input": "hi"},
     )
     assert response.status_code == 400
+    assert response.json() == {"error": "input_type_required"}
 
 
 def test_embeddings_minilm_rejects_query_input_type(client, rag_headers):
@@ -127,6 +128,7 @@ def test_embeddings_minilm_rejects_query_input_type(client, rag_headers):
         json={"model": "minilm-384-v1", "input": "hi", "input_type": "query"},
     )
     assert response.status_code == 400
+    assert response.json() == {"error": "invalid_input_type"}
 
 
 def test_embeddings_rate_limit_429(client, rag_headers, monkeypatch):

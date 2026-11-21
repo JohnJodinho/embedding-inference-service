@@ -26,6 +26,9 @@ loaded once at startup.
 - `POST /v1/embeddings` — embed one or many texts (auth required)
 - `GET /metrics` — process-local metrics (auth required)
 
+For `/v1/embeddings`, BGE requires `input_type` to be `query` or `document`.
+MiniLM accepts an omitted `input_type` or `text`; unsupported values return 400.
+
 ## Authentication
 
 Two distinct client secrets are configured as Hugging Face Space Secrets:

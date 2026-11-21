@@ -189,6 +189,22 @@ async def embeddings(request: Request) -> JSONResponse:
             )
             return error_response(400, "text_too_long")
 
+    if input_type not in cfg["supports_input_type"]:
+        error_code = (
+            "input_type_required"
+            if cfg["requires_input_type"] and input_type is None
+            else "invalid_input_type"
+        )
+        metrics.inc_request(ok=False)
+        log.warning(
+            "embeddings.invalid_input_type",
+            request_id=request_id,
+            client_label=client_label,
+            model=model_alias,
+            error_code=error_code,
+        )
+        return error_response(400, error_code)
+
     # Submit to the bounded scheduler.
     try:
         vectors = await scheduler.submit(
