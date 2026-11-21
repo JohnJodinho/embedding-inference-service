@@ -1,8 +1,33 @@
-venv
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets and local configuration (never commit real values)
 .env
-ARCHITECTURE.md
-CLINE_ONE_SHOT_INSTRUCTIONS.md
-DEPLOYMENT_RUNBOOK.md
-IMPLEMENTATION_PLAN.md
-TECHNICAL_REFERENCES.md
-.clinerules
+.env.*
+!.env.example
+
+# Model and Hugging Face caches (never commit weights)
+.cache/
+.huggingface/
+models/
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db
+
+# Internal Cline configuration (not a project deliverable)
+.clinerules/
+misc

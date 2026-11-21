@@ -1,0 +1,9 @@
+# Pinned dependencies (mutually compatible, Python 3.11+)
+fastapi==0.165.0
+uvicorn==0.54.0
+sentence-transformers==6.3.0
+torch==2.15.0
+
+# Test dependencies (installed during the Hugging Face Docker build)
+pytest==9.2.0
+httpx==0.28.1
