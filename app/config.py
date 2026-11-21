@@ -65,14 +65,13 @@ import os  # noqa: E402  (imported after constants for readability)
 
 
 def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name, default))
-    except (TypeError, ValueError):
+    value = os.environ.get(name)
+    if value is None:
         return default
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    return os.environ.get(name, str(default)).lower() == "true"
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
 
 
 def _env_str(name: str, default: str) -> str:
@@ -89,13 +88,40 @@ class Settings:
     micro_batch_window_ms: int = _env_int("MICRO_BATCH_WINDOW_MS", 200)
     rag_rate_limit_per_min: int = _env_int("RAG_RATE_LIMIT_PER_MIN", 60)
     zit_rate_limit_per_min: int = _env_int("ZIT_RATE_LIMIT_PER_MIN", 60)
-    request_timeout_seconds: int = _env_int("REQUEST_TIMEOUT_SECONDS", 30)
+    request_timeout_seconds: int = _env_int("REQUEST_TIMEOUT_SECONDS", 90)
     inference_timeout_seconds: int = _env_int("INFERENCE_TIMEOUT_SECONDS", 60)
     torch_num_threads: int = _env_int("TORCH_NUM_THREADS", 2)
+    torch_num_interop_threads: int = _env_int("TORCH_NUM_INTEROP_THREADS", 1)
     max_request_bytes: int = _env_int("MAX_REQUEST_BYTES", 262_144)  # 256 KiB
     max_texts_per_request: int = _env_int("MAX_TEXTS_PER_REQUEST", 64)
     max_chars_per_text: int = _env_int("MAX_CHARS_PER_TEXT", 2048)
     max_tokens_per_text: int = _env_int("MAX_TOKENS_PER_TEXT", 512)
+
+    def __post_init__(self) -> None:
+        positive_values = (
+            "minilm_queue_capacity",
+            "bge_queue_capacity",
+            "max_batch_size",
+            "request_timeout_seconds",
+            "inference_timeout_seconds",
+            "torch_num_threads",
+            "torch_num_interop_threads",
+            "max_request_bytes",
+            "max_texts_per_request",
+            "max_chars_per_text",
+            "max_tokens_per_text",
+            "rag_rate_limit_per_min",
+            "zit_rate_limit_per_min",
+        )
+        for field_name in positive_values:
+            if getattr(self, field_name) <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        if self.micro_batch_window_ms < 0:
+            raise ValueError("micro_batch_window_ms cannot be negative")
+        if self.max_tokens_per_text > MAX_SEQ_LENGTH:
+            raise ValueError(
+                f"max_tokens_per_text cannot exceed the model limit of {MAX_SEQ_LENGTH}"
+            )
 
 
 settings: Final[Settings] = Settings()

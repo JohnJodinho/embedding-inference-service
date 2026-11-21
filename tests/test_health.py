@@ -1,6 +1,5 @@
 """Health endpoint tests."""
 
-from app import main as main_module
 import app.models as models_module
 
 

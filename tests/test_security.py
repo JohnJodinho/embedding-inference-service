@@ -4,7 +4,6 @@ from dataclasses import replace
 
 import app.security as security_module
 from app.security import (
-    RateLimiter,
     authenticate,
     constant_time_compare,
     rate_limiter,
@@ -32,16 +31,26 @@ def test_authenticate_zit_key(zit_headers):
     assert authenticate(FakeRequest(), None) == "zit"
 
 
+def test_bearer_scheme_is_case_insensitive(rag_headers):
+    class FakeRequest:
+        headers = {"authorization": rag_headers["Authorization"].replace("Bearer", "bearer")}
+
+    assert authenticate(FakeRequest(), None) == "rag"
+
+
 def test_authenticate_missing_key_raises():
     from fastapi import HTTPException
+    from app.metrics import metrics
 
     class FakeRequest:
         headers = {}
 
+    before = metrics.snapshot()["auth_failures"]
     try:
         authenticate(FakeRequest(), None)
     except HTTPException as exc:
         assert exc.status_code == 401
+        assert metrics.snapshot()["auth_failures"] == before + 1
         return
     raise AssertionError("expected 401 for missing key")
 
@@ -58,6 +67,30 @@ def test_authenticate_unknown_key_raises():
         assert exc.status_code == 401
         return
     raise AssertionError("expected 401 for unknown key")
+
+
+def test_authenticate_rejects_empty_configured_keys(monkeypatch):
+    monkeypatch.setattr(
+        security_module,
+        "settings",
+        replace(
+            security_module.settings,
+            rag_api_key="",
+            zit_api_key="",
+        ),
+    )
+
+    class FakeRequest:
+        headers = {"authorization": "Bearer "}
+
+    from fastapi import HTTPException
+
+    try:
+        authenticate(FakeRequest(), None)
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        return
+    raise AssertionError("expected 401 when API keys are not configured")
 
 
 def test_rate_limiter_allows_and_blocks():

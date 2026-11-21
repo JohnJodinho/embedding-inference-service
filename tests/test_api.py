@@ -18,9 +18,29 @@ def test_openapi_documents_bearer_authentication():
     )
     for path, method in protected_routes:
         assert schema["paths"][path][method]["security"] == [{"BearerAuth": []}]
+        assert "401" in schema["paths"][path][method]["responses"]
 
     for path in ("/health/live", "/health/ready"):
         assert "security" not in schema["paths"][path]["get"]
+
+    request_body = schema["paths"]["/v1/embeddings"]["post"]["requestBody"]
+    assert request_body["required"] is True
+    body_schema = request_body["content"]["application/json"]["schema"]
+    assert len(body_schema["oneOf"]) == 2
+    assert "examples" in request_body["content"]["application/json"]
+    assert "400" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
+    assert "413" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
+    assert "415" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
+    assert "429" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
+    assert "503" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
+    assert "504" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
+    assert "embedding" in schema["components"]["schemas"]["EmbeddingItem"]["properties"]
+    response_properties = schema["components"]["schemas"]["EmbeddingsResponse"]["properties"]
+    assert {"model", "dimensions", "data", "usage"} <= response_properties.keys()
+    assert schema["paths"]["/health/live"]["get"]["responses"]["200"]["content"] == {
+        "text/plain": {"schema": {"type": "string"}}
+    }
+    assert "text/plain" in schema["paths"]["/metrics"]["get"]["responses"]["200"]["content"]
 
 
 def test_models_list(client, rag_headers):
@@ -131,6 +151,125 @@ def test_embeddings_empty_input(client, rag_headers):
     assert response.status_code == 400
 
 
+def test_embeddings_empty_body_returns_clear_error(client, rag_headers):
+    response = client.post(
+        "/v1/embeddings",
+        headers=rag_headers,
+        content=b"",
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "empty_body"}
+
+
+def test_embeddings_non_object_json_returns_bad_request(client, rag_headers):
+    response = client.post(
+        "/v1/embeddings",
+        headers=rag_headers,
+        json=["not", "an", "object"],
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_body"}
+
+
+def test_embeddings_invalid_utf8_returns_bad_request(client, rag_headers):
+    response = client.post(
+        "/v1/embeddings",
+        headers={
+            "Authorization": rag_headers["Authorization"],
+            "Content-Type": "application/json",
+        },
+        content=b"\xff",
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_json"}
+
+
+def test_embeddings_normalize_embeddings_must_be_boolean(client, rag_headers):
+    response = client.post(
+        "/v1/embeddings",
+        headers=rag_headers,
+        json={
+            "model": "minilm-384-v1",
+            "input": "hello",
+            "normalize_embeddings": "false",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_input"}
+
+
+def test_embeddings_rejects_unknown_fields(client, rag_headers):
+    response = client.post(
+        "/v1/embeddings",
+        headers=rag_headers,
+        json={"model": "minilm-384-v1", "input": "hello", "unexpected": True},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_input"}
+
+
+def test_embeddings_requires_json_content_type(client, rag_headers):
+    response = client.post(
+        "/v1/embeddings",
+        headers={"Authorization": rag_headers["Authorization"], "Content-Type": "text/plain"},
+        content=b'{"model":"minilm-384-v1","input":"hello"}',
+    )
+    assert response.status_code == 415
+    assert response.json() == {"error": "unsupported_media_type"}
+
+
+def test_embeddings_streaming_body_limit(client, rag_headers, monkeypatch):
+    from dataclasses import replace
+
+    import app.embeddings_api as embeddings_api_module
+
+    monkeypatch.setattr(
+        embeddings_api_module,
+        "settings",
+        replace(embeddings_api_module.settings, max_request_bytes=10),
+    )
+    response = client.post(
+        "/v1/embeddings",
+        headers=rag_headers,
+        content=b'{"model":"minilm"}',
+    )
+    assert response.status_code == 413
+    assert response.json() == {"error": "request_too_large"}
+
+
+def test_embeddings_enforces_token_limit(client, rag_headers, monkeypatch):
+    from dataclasses import replace
+
+    import app.embeddings_api as embeddings_api_module
+
+    monkeypatch.setattr(
+        embeddings_api_module,
+        "settings",
+        replace(embeddings_api_module.settings, max_tokens_per_text=1),
+    )
+    response = client.post(
+        "/v1/embeddings",
+        headers=rag_headers,
+        json={"model": "minilm-384-v1", "input": "one two"},
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "too_many_tokens"}
+
+
+def test_request_id_is_generated_and_returned(client):
+    response = client.get("/health/live")
+    assert response.status_code == 200
+    assert len(response.headers["X-Request-ID"]) == 32
+
+
+def test_embeddings_requires_auth_before_body_validation(client):
+    response = client.post(
+        "/v1/embeddings",
+        content=b"",
+    )
+    assert response.status_code == 401
+
+
 def test_embeddings_bge_requires_input_type(client, zit_headers):
     response = client.post(
         "/v1/embeddings",
@@ -151,11 +290,7 @@ def test_embeddings_minilm_rejects_query_input_type(client, rag_headers):
     assert response.json() == {"error": "invalid_input_type"}
 
 
-def test_embeddings_rate_limit_429(client, rag_headers, monkeypatch):
-    from app import security
-    import app.main as main_module
-
-    # Exhaust the rate limiter bucket for 'rag'
+def test_embeddings_rate_limit_429(client, rag_headers):
     from app.security import rate_limiter
 
     rate_limiter._buckets.clear()

@@ -6,7 +6,7 @@ the life of the process. Encoding runs on CPU only.
 
 from __future__ import annotations
 
-import os
+import math
 from dataclasses import dataclass
 from typing import Final
 
@@ -22,16 +22,14 @@ from .config import (
     MINILM_DIMENSIONS,
     MINILM_MODEL_ID,
     MINILM_REVISION,
-    MODEL_REGISTRY,
     get_model_config,
+    settings,
 )
 from .logging import log
 
 # CPU-only inference. Limit PyTorch thread contention.
-torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "2")))
-torch.set_num_interop_threads(1)
-
-_MODEL_CACHE: Final[dict[str, SentenceTransformer]] = {}
+torch.set_num_threads(settings.torch_num_threads)
+torch.set_num_interop_threads(settings.torch_num_interop_threads)
 
 
 @dataclass
@@ -39,6 +37,9 @@ class ModelHandle:
     alias: str
     model: SentenceTransformer
     dimensions: int
+
+
+_MODEL_CACHE: Final[dict[str, ModelHandle]] = {}
 
 
 class ModelNotReadyError(RuntimeError):
@@ -57,7 +58,12 @@ def load_model(alias: str) -> ModelHandle:
 
     log.info("model.loading", alias=alias, model_id=model_id, revision=revision)
     try:
-        model = SentenceTransformer(model_id, revision=revision, device="cpu")
+        model = SentenceTransformer(
+            model_id,
+            revision=revision,
+            device="cpu",
+            local_files_only=True,
+        )
         model.max_seq_length = MAX_SEQ_LENGTH
 
         # Probe the model to confirm it produces the expected dimension.
@@ -119,6 +125,17 @@ def prepare_input(alias: str, input_type: str | None, text: str) -> str:
     return text
 
 
+def count_tokens(alias: str, text: str) -> int:
+    """Count tokenizer tokens, including special tokens and without truncation."""
+    handle = get_model(alias)
+    tokenizer = getattr(handle.model[0], "tokenizer", None)
+    encode = getattr(tokenizer, "encode", None)
+    if not callable(encode):
+        raise ModelNotReadyError(f"Tokenizer for model {alias} is unavailable")
+    token_ids = encode(text, add_special_tokens=True, truncation=False)
+    return len(token_ids)
+
+
 def encode_texts(
     alias: str,
     texts: list[str],
@@ -132,7 +149,7 @@ def encode_texts(
     handle = get_model(alias)
     vectors = handle.model.encode(
         texts,
-        batch_size=len(texts),
+        batch_size=min(len(texts), settings.max_batch_size),
         normalize_embeddings=normalize_embeddings,
         convert_to_numpy=True,
         show_progress_bar=False,
@@ -142,8 +159,6 @@ def encode_texts(
 
 def validate_vector(vector: list[float], expected_dimensions: int) -> None:
     """Raise if *vector* is the wrong length or contains non-finite values."""
-    import math
-
     if len(vector) != expected_dimensions:
         raise ValueError(
             f"Embedding dimension {len(vector)} != expected {expected_dimensions}"

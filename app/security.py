@@ -8,17 +8,23 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import threading
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import Final
 
 from fastapi import HTTPException, Request, status
+from fastapi.security import HTTPBearer
 
-from .config import Settings, settings
+from .config import settings
 from .logging import log
+from .metrics import metrics
 
-_CLIENT_HEADER: Final[str] = "X-Client-Id"
+bearer_auth: Final[HTTPBearer] = HTTPBearer(
+    scheme_name="BearerAuth",
+    description="Use a configured RAG_API_KEY or ZIT_API_KEY.",
+    auto_error=False,
+)
 
 
 def constant_time_compare(a: str, b: str) -> bool:
@@ -29,13 +35,14 @@ def constant_time_compare(a: str, b: str) -> bool:
 def resolve_api_key(request: Request) -> str:
     """Extract the bearer API key from the Authorization header."""
     authorization = request.headers.get("authorization", "")
-    if not authorization.startswith("Bearer "):
+    scheme, separator, api_key = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not separator or not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_auth",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return authorization[len("Bearer "):]
+    return api_key
 
 
 def authenticate(request: Request, client_id: str | None) -> str:
@@ -43,14 +50,44 @@ def authenticate(request: Request, client_id: str | None) -> str:
 
     Raises HTTPException(401) on missing/unknown keys.
     """
-    api_key = resolve_api_key(request)
+    try:
+        api_key = resolve_api_key(request)
+    except HTTPException:
+        metrics.inc_auth_failure()
+        metrics.inc_request(ok=False)
+        log.warning(
+            "auth.failed",
+            request_id=getattr(getattr(request, "state", None), "request_id", "unknown"),
+            client_label="unknown",
+            model_alias=None,
+            batch_size=0,
+            queue_wait_ms=0,
+            inference_ms=0,
+            total_ms=0,
+            status="error",
+            error_code="invalid_auth",
+        )
+        raise
 
-    if constant_time_compare(api_key, settings.rag_api_key):
+    if settings.rag_api_key and constant_time_compare(api_key, settings.rag_api_key):
         client_label = "rag"
-    elif constant_time_compare(api_key, settings.zit_api_key):
+    elif settings.zit_api_key and constant_time_compare(api_key, settings.zit_api_key):
         client_label = "zit"
     else:
-        log.warning("auth.failed", client_label=client_id or "unknown", error_code="invalid_key")
+        metrics.inc_auth_failure()
+        metrics.inc_request(ok=False)
+        log.warning(
+            "auth.failed",
+            request_id=getattr(getattr(request, "state", None), "request_id", "unknown"),
+            client_label="unknown",
+            model_alias=None,
+            batch_size=0,
+            queue_wait_ms=0,
+            inference_ms=0,
+            total_ms=0,
+            status="error",
+            error_code="invalid_key",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid_auth",
@@ -58,8 +95,21 @@ def authenticate(request: Request, client_id: str | None) -> str:
         )
 
     if client_id and client_id != client_label:
+        metrics.inc_auth_failure()
+        metrics.inc_request(ok=False)
         # Client label hint must match the derived consumer.
-        log.warning("auth.client_mismatch", client_label=client_label, provided=client_id, error_code="client_mismatch")
+        log.warning(
+            "auth.client_mismatch",
+            request_id=getattr(getattr(request, "state", None), "request_id", "unknown"),
+            client_label=client_label,
+            model_alias=None,
+            batch_size=0,
+            queue_wait_ms=0,
+            inference_ms=0,
+            total_ms=0,
+            status="error",
+            error_code="client_mismatch",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="client_mismatch",
@@ -74,13 +124,13 @@ class _TokenBucket:
     capacity: int
     fill_rate: float  # tokens per second
     tokens: float = field(init=False)
-    last: float = field(default_factory=time.time)
+    last: float = field(default_factory=time.monotonic)
 
     def __post_init__(self) -> None:
         self.tokens = float(self.capacity)
 
     def consume(self, tokens: int = 1) -> bool:
-        now = time.time()
+        now = time.monotonic()
         self.tokens = min(self.capacity, self.tokens + (now - self.last) * self.fill_rate)
         self.last = now
         if self.tokens >= tokens:
@@ -94,7 +144,7 @@ class RateLimiter:
 
     def __init__(self) -> None:
         self._buckets: dict[str, _TokenBucket] = {}
-        self._lock = __import__("threading").Lock()
+        self._lock = threading.Lock()
 
     def check(self, client_label: str) -> bool:
         with self._lock:
@@ -131,6 +181,11 @@ def validate_texts(texts: list[str]) -> None:
             detail="too_many_texts",
         )
     for text in texts:
+        if not text.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="empty_input",
+            )
         if len(text) > settings.max_chars_per_text:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

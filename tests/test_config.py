@@ -1,5 +1,7 @@
 """Model registry and configuration tests."""
 
+import pytest
+
 from app.config import (
     BGE_DIMENSIONS,
     BGE_MODEL_ID,
@@ -41,3 +43,12 @@ def test_get_model_config_unknown_alias():
 def test_get_model_config_returns_dimensions():
     assert get_model_config("minilm-384-v1")["dimensions"] == 384
     assert get_model_config("bge-base-768-v1")["dimensions"] == 768
+
+
+def test_token_limit_cannot_exceed_model_sequence_length():
+    from dataclasses import replace
+
+    from app.config import settings
+
+    with pytest.raises(ValueError, match="model limit"):
+        replace(settings, max_tokens_per_text=513)

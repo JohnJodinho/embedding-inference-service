@@ -1,9 +1,4 @@
-"""Pytest fixtures for the embedding inference service.
-
-Tests use fakes/mocks so no real model inference is required locally. Real
-model smoke tests live in tests/test_smoke.py and only run when the pinned
-models are actually available (i.e. during the Hugging Face Docker build).
-"""
+"""Pytest fixtures for fast unit tests and the HF-build smoke suite."""
 
 from __future__ import annotations
 
@@ -14,9 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
+import app.embeddings_api as embeddings_api_module
 import app.models as models_module
+import app.routes as routes_module
 import app.security as security_module
 from app.config import settings
+from app.scheduler import InferenceResult
 
 _TEST_RAG_KEY: Final[str] = "rag-test-key"
 _TEST_ZIT_KEY: Final[str] = "zit-test-key"
@@ -46,9 +44,21 @@ class _FakeScheduler:
     def ready(self) -> bool:
         return self.started
 
-    async def submit(self, alias, texts, normalize_embeddings=False, input_type=None):
+    async def submit(
+        self,
+        alias,
+        texts,
+        normalize_embeddings=False,
+        input_type=None,
+        request_id="unknown",
+        client_label="unknown",
+    ):
         dims = 384 if alias == "minilm-384-v1" else 768
-        return [[0.1] * dims for _ in texts]
+        return InferenceResult(
+            vectors=[[0.1] * dims for _ in texts],
+            queue_wait_ms=0.1,
+            inference_ms=0.2,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +77,17 @@ def _set_test_keys(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch):
     """A TestClient with faked models, scheduler and loaded cache."""
+    fake_scheduler = _FakeScheduler()
+    fake_scheduler.start()
     monkeypatch.setattr(main_module, "load_model", lambda alias: None)
+    monkeypatch.setattr(main_module, "scheduler", fake_scheduler)
+    monkeypatch.setattr(embeddings_api_module, "scheduler", fake_scheduler)
+    monkeypatch.setattr(routes_module, "scheduler", fake_scheduler)
+    monkeypatch.setattr(
+        embeddings_api_module,
+        "count_tokens",
+        lambda alias, text: len(text.split()),
+    )
     monkeypatch.setitem(
         models_module._MODEL_CACHE,
         "minilm-384-v1",
@@ -78,10 +98,6 @@ def client(monkeypatch: pytest.MonkeyPatch):
         "bge-base-768-v1",
         _FakeModel(768),
     )
-    fake_scheduler = _FakeScheduler()
-    fake_scheduler.start()
-    monkeypatch.setattr(main_module, "scheduler", fake_scheduler)
-
     with TestClient(main_module.app) as test_client:
         yield test_client
 

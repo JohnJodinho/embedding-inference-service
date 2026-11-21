@@ -1,51 +1,63 @@
-"""Bounded per-model queues and a single CPU inference worker.
-
-The worker runs inside the FastAPI event loop (one process, one worker). It
-micro-batches texts per model and applies a fairness rule so BGE receives
-preferential scheduling while MiniLM can never starve.
-"""
+"""Bounded per-model queues and one off-event-loop CPU inference worker."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from typing import Final
 
 from .config import Settings, settings
 from .logging import log
 from .metrics import metrics
+from .scheduler_inference import InferenceBatchProcessor
+from .scheduler_types import (
+    InferenceError,
+    InferenceResult,
+    InferenceTimeoutError,
+    QueueFullError,
+    RequestTimeoutError,
+    SchedulerNotReadyError,
+    _RequestItem,
+    create_request_item,
+    fail_future,
+)
 
 MAX_CONSECUTIVE_BGE: Final[int] = 2
 
-
-class QueueFullError(RuntimeError):
-    """Raised when a bounded queue cannot accept more work."""
-
-
-@dataclass
-class _RequestItem:
-    texts: list[str]
-    normalize_embeddings: bool
-    input_type: str | None
-    future: asyncio.Future
+__all__ = [
+    "InferenceError",
+    "InferenceResult",
+    "InferenceTimeoutError",
+    "InferenceScheduler",
+    "MAX_CONSECUTIVE_BGE",
+    "QueueFullError",
+    "RequestTimeoutError",
+    "SchedulerNotReadyError",
+    "scheduler",
+]
 
 
 class InferenceScheduler:
-    def __init__(self) -> None:
-        self._minilm_queue: Final[asyncio.Queue[_RequestItem]] = asyncio.Queue(
-            maxsize=settings.minilm_queue_capacity
+    def __init__(self, config: Settings = settings) -> None:
+        self._settings = config
+        self._processor = InferenceBatchProcessor(config)
+        self._minilm_queue: asyncio.Queue[_RequestItem] = asyncio.Queue(
+            maxsize=config.minilm_queue_capacity
         )
-        self._bge_queue: Final[asyncio.Queue[_RequestItem]] = asyncio.Queue(
-            maxsize=settings.bge_queue_capacity
+        self._bge_queue: asyncio.Queue[_RequestItem] = asyncio.Queue(
+            maxsize=config.bge_queue_capacity
         )
         self._queues: Final[dict[str, asyncio.Queue[_RequestItem]]] = {
             "minilm-384-v1": self._minilm_queue,
             "bge-base-768-v1": self._bge_queue,
         }
-        self._worker_task: asyncio.Task | None = None
-        self._consecutive_bge: int = 0
-        self._started: bool = False
+        self._worker_task: asyncio.Task[None] | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._wakeup = asyncio.Event()
+        self._consecutive_bge = 0
+        self._started = False
+        self._stopping = False
 
     @property
     def queues(self) -> dict[str, asyncio.Queue[_RequestItem]]:
@@ -54,24 +66,34 @@ class InferenceScheduler:
     def start(self) -> None:
         if self._started:
             return
-        loop = asyncio.get_event_loop()
-        self._worker_task = loop.create_task(self._run())
+        self._wakeup = asyncio.Event()
+        self._stopping = False
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="embedding-inference",
+        )
+        self._worker_task = asyncio.get_running_loop().create_task(self._run())
         self._started = True
         log.info("scheduler.started")
 
     async def stop(self) -> None:
+        if not self._started:
+            return
+        self._stopping = True
+        self._wakeup.set()
         if self._worker_task is not None:
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:  # pragma: no cover - shutdown path
-                pass
+            await self._worker_task
+        self._reject_queued(SchedulerNotReadyError("Inference scheduler stopped"))
+        if self._executor is not None:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            self._executor = None
         self._started = False
         log.info("scheduler.stopped")
 
     def ready(self) -> bool:
         return (
             self._started
+            and not self._stopping
             and self._worker_task is not None
             and not self._worker_task.done()
         )
@@ -82,196 +104,172 @@ class InferenceScheduler:
         texts: list[str],
         normalize_embeddings: bool,
         input_type: str | None,
-    ) -> list[list[float]]:
-        """Submit texts for inference and await the result.
-
-        Raises QueueFullError if the bounded queue for *alias* is full.
-        """
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future = loop.create_future()
-        item = _RequestItem(
-            texts=texts,
-            normalize_embeddings=normalize_embeddings,
-            input_type=input_type,
-            future=future,
+        request_id: str = "unknown",
+        client_label: str = "unknown",
+    ) -> InferenceResult:
+        """Enqueue a request and bound its total wait time."""
+        if not self.ready():
+            raise SchedulerNotReadyError("Inference scheduler is not ready")
+        future = asyncio.get_running_loop().create_future()
+        item = create_request_item(
+            alias,
+            texts,
+            normalize_embeddings,
+            input_type,
+            request_id,
+            client_label,
+            future,
         )
         queue = self._queues[alias]
-        if queue.full():
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull as exc:
             metrics.inc_queue_full()
             log.warning(
                 "scheduler.queue_full",
-                alias=alias,
-                queue_size=queue.qsize(),
+                request_id=request_id,
+                client_label=client_label,
+                model_alias=alias,
+                batch_size=len(texts),
+                queue_wait_ms=0,
+                inference_ms=0,
+                total_ms=0,
+                status="error",
                 error_code="queue_full",
+                queue_size=queue.qsize(),
             )
-            raise QueueFullError(f"Queue full for model {alias}")
-        await queue.put(item)
-        return await future
+            raise QueueFullError(f"Queue full for model {alias}") from exc
+        self._wakeup.set()
+        return await self._wait_for_result(item)
 
-    # ------------------------------------------------------------------ #
-    # Worker loop
-    # ------------------------------------------------------------------ #
-    async def _run(self) -> None:
-        while True:
-            try:
-                batch = await self._collect_batch()
-            except asyncio.CancelledError:  # pragma: no cover - shutdown
+    async def _wait_for_result(self, item: _RequestItem) -> InferenceResult:
+        try:
+            return await asyncio.wait_for(
+                item.future,
+                timeout=self._settings.request_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            if item.future.done() and not item.future.cancelled():
                 raise
-            if not batch:
-                continue
-            by_model: dict[tuple[str, bool], list[tuple[_RequestItem, int]]] = {}
-            for idx, (alias, item) in enumerate(batch):
-                by_model.setdefault((alias, item.normalize_embeddings), []).append((item, idx))
-            for (alias, normalize_embeddings), entries in by_model.items():
-                self._consecutive_bge = (
-                    self._consecutive_bge + 1 if alias == "bge-base-768-v1" else 0
-                )
+            if not item.future.done():
+                item.future.cancel()
+            now = time.monotonic()
+            queue_wait_ms = (
+                item.queue_wait_ms
+                if item.queue_wait_ms is not None
+                else (now - item.enqueued_at) * 1000
+            )
+            inference_ms = (
+                (now - item.inference_started_at) * 1000
+                if item.inference_started_at is not None
+                else 0
+            )
+            log.warning(
+                "scheduler.request_timeout",
+                request_id=item.request_id,
+                client_label=item.client_label,
+                model_alias=item.alias,
+                batch_size=len(item.texts),
+                queue_wait_ms=round(queue_wait_ms, 2),
+                inference_ms=round(inference_ms, 2),
+                total_ms=round((now - item.enqueued_at) * 1000, 2),
+                status="error",
+                error_code="request_timeout",
+            )
+            raise RequestTimeoutError(queue_wait_ms, inference_ms) from exc
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            batch = await self._collect_batch()
+            if self._stopping:
+                break
+            grouped: dict[tuple[str, bool], list[_RequestItem]] = {}
+            for alias, item in batch:
+                grouped.setdefault((alias, item.normalize_embeddings), []).append(item)
+            for (alias, normalize_embeddings), entries in grouped.items():
                 await self._encode_and_resolve(alias, entries, normalize_embeddings)
+                if self._stopping:
+                    break
+        self._reject_queued(SchedulerNotReadyError("Inference scheduler stopped"))
 
     async def _collect_batch(self) -> list[tuple[str, _RequestItem]]:
-        """Wait for the first item(s), then opportunistically fill a micro-batch."""
-        tasks = {
-            asyncio.create_task(self._minilm_queue.get()): "minilm-384-v1",
-            asyncio.create_task(self._bge_queue.get()): "bge-base-768-v1",
-        }
-        done, pending = await asyncio.wait(
-            tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-        )
-        for task in pending:
-            task.cancel()
-        batch: list[tuple[str, _RequestItem]] = []
-        for task in done:
-            alias = tasks[task]
-            try:
-                item = task.result()
-            except (asyncio.CancelledError, Exception):
-                continue
-            batch.append((alias, item))
-
-        window_s = settings.micro_batch_window_ms / 1000.0
-        deadline = time.monotonic() + window_s
-        while len(batch) < settings.max_batch_size:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+        if not await self._wait_for_work():
+            return []
+        collected: list[tuple[str, _RequestItem]] = []
+        text_count = 0
+        deadline = time.monotonic() + self._settings.micro_batch_window_ms / 1000
+        while not self._stopping:
+            if collected and text_count >= self._settings.max_batch_size:
                 break
             alias = self._pick_nonblocking()
             if alias is None:
-                await asyncio.sleep(min(0.05, remaining))
+                if await self._wait_for_microbatch(deadline):
+                    continue
+                break
+            item = self._queues[alias].get_nowait()
+            if item.future.cancelled():
                 continue
-            try:
-                item = self._queues[alias].get_nowait()
-            except asyncio.QueueEmpty:
-                continue
-            batch.append((alias, item))
-        return batch
+            self._consecutive_bge = (
+                self._consecutive_bge + 1
+                if alias == "bge-base-768-v1"
+                else 0
+            )
+            collected.append((alias, item))
+            text_count += len(item.texts)
+        return collected
+
+    async def _wait_for_work(self) -> bool:
+        while not self._stopping:
+            if any(queue.qsize() for queue in self._queues.values()):
+                return True
+            self._wakeup.clear()
+            if any(queue.qsize() for queue in self._queues.values()):
+                return True
+            await self._wakeup.wait()
+        return False
+
+    async def _wait_for_microbatch(self, deadline: float) -> bool:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        self._wakeup.clear()
+        if any(queue.qsize() for queue in self._queues.values()):
+            return True
+        try:
+            await asyncio.wait_for(self._wakeup.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return False
+        return not self._stopping
 
     def _pick_nonblocking(self) -> str | None:
-        """Pick a model that has a queued item, applying BGE priority + fairness.
-
-        Only queues with immediately-available items are considered so this never
-        blocks.
-        """
-        non_empty = [a for a, q in self._queues.items() if q.qsize() > 0]
-        if not non_empty:
-            return None
-        if len(non_empty) == 1:
-            return non_empty[0]
-        if (
-            "bge-base-768-v1" in non_empty
-            and self._consecutive_bge < MAX_CONSECUTIVE_BGE
-        ):
+        """Prefer BGE but serve MiniLM after a bounded run of BGE requests."""
+        minilm_ready = not self._minilm_queue.empty()
+        bge_ready = not self._bge_queue.empty()
+        if bge_ready and (not minilm_ready or self._consecutive_bge < MAX_CONSECUTIVE_BGE):
             return "bge-base-768-v1"
-        return "minilm-384-v1"
+        if minilm_ready:
+            return "minilm-384-v1"
+        return None
 
     async def _encode_and_resolve(
         self,
         alias: str,
-        entries: list[tuple[_RequestItem, int]],
+        entries: list[_RequestItem],
         normalize_embeddings: bool,
     ) -> None:
-        from .config import get_model_config
-        from .models import (
-            ModelNotReadyError,
-            encode_texts,
-            get_model,
-            prepare_input,
-            validate_vector,
+        await self._processor.run(
+            alias,
+            entries,
+            normalize_embeddings,
+            self._executor,
         )
 
-        texts: list[str] = []
-        ranges: list[tuple[_RequestItem, int, int]] = []
-        for item, _idx in entries:
-            start = len(texts)
-            try:
-                prepared = [
-                    prepare_input(alias, item.input_type, text)
-                    for text in item.texts
-                ]
-            except Exception as exc:  # noqa: BLE001
-                if not item.future.done():
-                    item.future.set_exception(exc)
-                return
-            texts.extend(prepared)
-            ranges.append((item, start, len(texts)))
-
-        t0 = time.monotonic()
-        try:
-            get_model(alias)
-            vectors = encode_texts(alias, texts, normalize_embeddings)
-        except ModelNotReadyError as exc:
-            self._fail_future(entries, exc)
-            metrics.inc_model_load_failure()
-            return
-        except Exception as exc:  # noqa: BLE001
-            log.error(
-                "scheduler.inference_error",
-                alias=alias,
-                batch_size=len(texts),
-                error_code="inference_error",
-            )
-            metrics.inc_inference_error()
-            self._fail_future(entries, exc)
-            return
-        inference_ms = (time.monotonic() - t0) * 1000
-
-        expected_dims = get_model_config(alias)["dimensions"]
-        try:
-            if len(vectors) != len(texts):
-                raise ValueError(
-                    f"Encoder returned {len(vectors)} vectors for {len(texts)} texts"
-                )
-            for item, start, end in ranges:
-                item_vectors = vectors[start:end]
-                for vector in item_vectors:
-                    validate_vector(vector, expected_dims)
-                if not item.future.done():
-                    item.future.set_result(item_vectors)
-            metrics.inc_embeddings(len(vectors))
-            log.info(
-                "scheduler.batch_done",
-                alias=alias,
-                batch_size=len(texts),
-                inference_ms=round(inference_ms, 2),
-                status="ok",
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.error(
-                "scheduler.validation_error",
-                alias=alias,
-                error_code="validation_error",
-            )
-            metrics.inc_inference_error()
-            self._fail_future(entries, exc)
-
-    def _fail_future(
-        self,
-        entries: list[tuple[_RequestItem, int]],
-        exc: BaseException,
-    ) -> None:
-        for item, _idx in entries:
-            if not item.future.done():
-                item.future.set_exception(exc)
+    def _reject_queued(self, error: BaseException) -> None:
+        queued: list[_RequestItem] = []
+        for queue in self._queues.values():
+            while not queue.empty():
+                queued.append(queue.get_nowait())
+        fail_future(queued, error)
 
 
 scheduler: Final[InferenceScheduler] = InferenceScheduler()
-

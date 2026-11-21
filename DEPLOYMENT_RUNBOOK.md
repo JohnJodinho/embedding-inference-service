@@ -17,29 +17,33 @@
    - `ZIT_API_KEY`: a different long random secret for the ZIT assistant.
 4. Do not put these values in `.env.example`, Git, workflow YAML or logs.
 
-## First push
+## Commit and push
 
-After Cline has completed the implementation and confirmed the final Git status, run the exact commands it provides for the new repository. The intended sequence is:
+The GitHub repository and local `main` branch already exist. Preserve the current
+Git metadata and remote; do not run `git init` or replace the remote. Review the
+diff, commit the completed implementation on `main`, and push to `origin`.
 
 ```powershell
-git init -b main
+git status --short --branch
 git add .
-git commit -m "Build shared embedding inference API"
-git remote add origin https://github.com/JohnJodinho/embedding-inference-service.git
-git push -u origin main
+git commit -m "Align service with implementation plan"
+git push origin main
 ```
 
-If Cline has already initialised the repository or configured the remote, do not repeat those commands. Do not delete or overwrite the original RAG application's repository.
+Never delete or overwrite the original RAG application's repository.
 
 ## Deployment flow
 
 Every push to GitHub `main` triggers the workflow:
 1. Check out the GitHub source.
 2. Prepare the Hugging Face Space README metadata.
-3. Push the source to `JohnAlbarkaIbrahim/SentimentScope`.
+3. Force-replace HF `main` with GitHub `main`; the Space is an intentional
+   deployment mirror, not a branch to merge into.
 4. Hugging Face starts a Docker build.
-5. The Docker build installs dependencies, downloads both pinned models, runs real-model smoke checks and runs the full pytest suite.
-6. If tests fail, the Docker build fails and the new image is not deployed.
+5. The Docker build installs pinned runtime dependencies, downloads both pinned
+   models, and runs the complete test suite with real-model smoke checks. No test
+   is skipped.
+6. If any test fails, the Docker build fails and the new image is not deployed.
 7. If the build succeeds, the Space starts the API.
 
 The Hugging Face build log is the authoritative record of build-time tests. GitHub Actions success means the source sync succeeded; it does not by itself prove the Space image became healthy.

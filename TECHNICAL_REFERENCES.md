@@ -10,6 +10,7 @@ Cline must consult the current official documentation before implementation. Do 
 | FastAPI async testing | https://fastapi.tiangolo.com/advanced/async-tests/ | Correct async test client and lifespan handling |
 | FastAPI testing events | https://fastapi.tiangolo.com/advanced/testing-events/ | Ensure tests explicitly execute application lifespan |
 | Sentence Transformers model API | https://www.sbert.net/docs/package_reference/sentence_transformer/model.html | Current encode API, batching, normalization, device and token handling |
+| Hugging Face tokenizer API | https://huggingface.co/docs/transformers/en/main_classes/tokenizer | Count tokens with special tokens and `truncation=False` |
 | Sentence Transformers migration guide | https://sbert.net/docs/migration_guide.html | Avoid outdated API patterns |
 | MiniLM model card | https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 | Verify model ID, dimensions and model behaviour |
 | BGE model card | https://huggingface.co/BAAI/bge-base-en-v1.5 | Verify model ID, query instruction, dimensions, sequence length and licence |
@@ -33,15 +34,26 @@ Do not claim the Space entitlement or hardware is guaranteed by a rename. The in
 ### Date checked
 2026-11-21
 
-### Pinned Python and package versions (mutually compatible, Python 3.11+)
+### Pinned runtime Python and package versions (Python 3.11)
 | Package | Pinned version | Source |
 |---------|---------------|--------|
 | fastapi | 0.165.0 | https://pypi.org/pypi/fastapi/json |
 | uvicorn | 0.54.0 | https://pypi.org/pypi/uvicorn/json |
 | sentence-transformers | 6.3.0 | https://pypi.org/pypi/sentence-transformers/json |
 | torch | 2.15.0 | https://pypi.org/pypi/torch/json |
+
+Test-only dependencies are isolated from the runtime image in
+`requirements-test.txt`:
+
+| Package | Pinned version | Source |
+|---------|---------------|--------|
 | pytest | 9.2.0 | https://pypi.org/pypi/pytest/json |
 | httpx | 0.28.1 | https://pypi.org/pypi/httpx/json |
+
+The GitHub workflow uses `actions/checkout@v7.0.1`, verified against the
+official releases API on 2026-11-21. The workflow's `contents: read`
+permission is sufficient because deployment authenticates directly to the HF
+Space with the repository's `HF_TOKEN` secret.
 
 Note: `uvx`/`uv` are not available in this environment, so the FastAPI AI-agent
 skill could not be installed via `uvx library-skills`; the official FastAPI
@@ -66,7 +78,9 @@ significant). Prepended to query inputs only; document inputs receive no prefix.
 - Hugging Face Space configuration: https://huggingface.co/docs/hub/spaces-config-reference
 - FastAPI lifespan: https://fastapi.tiangolo.com/advanced/events/
 - FastAPI testing: https://fastapi.tiangolo.com/advanced/async-tests/
+- FastAPI response models: https://fastapi.tiangolo.com/tutorial/response-model/
 - Sentence Transformers model API: https://www.sbert.net/docs/package_reference/sentence_transformer/model.html
+- Hugging Face tokenizer API: https://huggingface.co/docs/transformers/en/main_classes/tokenizer
 - Sentence Transformers migration guide: https://sbert.net/docs/migration_guide.html
 - MiniLM model card: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
 - BGE model card: https://huggingface.co/BAAI/bge-base-en-v1.5
@@ -74,6 +88,8 @@ significant). Prepended to query inputs only; document inputs receive no prefix.
 - actions/checkout: https://github.com/actions/checkout
 
 ### Unresolved items
-- None. All model IDs, revisions, dimensions, licences, and API parameters were
-  verified against official sources before pinning.
+- Hugging Face Space hardware is not visible from this repository; verify it in
+  the Space settings before tuning CPU thread or queue limits.
+- No model IDs, revisions, dimensions, licences, or API parameter uncertainties
+  remain.
 

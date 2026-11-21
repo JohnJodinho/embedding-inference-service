@@ -42,9 +42,9 @@ Load models in FastAPI lifespan startup. Readiness remains false until both mode
 
 Use two bounded queues and one inference worker. BGE gets preferential scheduling because it serves the public-facing ZIT assistant, while MiniLM traffic is expected to be low. Use a fairness rule so MiniLM cannot starve.
 
-Batch multiple texts from a request. Micro-batch across waiting requests for a short, configurable collection window. Set strict queue capacity, per-request batch limits and timeouts. When capacity is exhausted, reject quickly with HTTP 503 and a retry hint. Do not create an unbounded backlog.
+Batch multiple texts from a request. Micro-batch across waiting requests for a short, configurable collection window. Set strict queue capacity, per-request batch limits and timeouts. The total request deadline includes queue wait and inference; model inference has its own deadline. When capacity is exhausted, reject quickly with HTTP 503 and a retry hint. Do not create an unbounded backlog.
 
-The worker runs model inference outside the async event loop. Limit PyTorch intra-op and inter-op CPU threads to configured values. Benchmark these values on the actual Space after deployment; do not assume local performance.
+The single inference thread runs model encoding outside the async event loop. Timed-out Python thread work cannot be forcibly cancelled, so the worker waits for it to finish before starting another batch; this preserves the one-inference-at-a-time guarantee. Limit PyTorch intra-op and inter-op CPU threads to configured values. Benchmark these values on the actual Space after deployment; do not assume local performance.
 
 ## Model registry
 
@@ -62,6 +62,7 @@ Both model revisions must be immutable commit hashes. The service rejects unknow
 - BGE document input receives no query instruction.
 - BGE document and query vectors must use the same model revision and compatible normalization.
 - Input order is preserved in the response.
+- Validate the model-tokenizer count on the final formatted input (including special tokens and the BGE query prefix), without truncation. The configured token ceiling cannot exceed the models' 512-token sequence limit.
 - Every response reports the model alias and dimensions.
 
 ## Reliability
