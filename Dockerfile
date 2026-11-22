@@ -12,11 +12,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /build
 
+RUN python -m pip install --no-cache-dir uv==0.13.9
 RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/opt/venv/bin:$PATH" \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-default-groups
 
 # Keep model revisions in the Python registry as the single source of truth.
 COPY app/__init__.py app/config.py ./app/
@@ -28,14 +31,16 @@ RUN python -c "from sentence_transformers import SentenceTransformer; \
      for cfg in MODEL_REGISTRY.values()]"
 
 # Keep test tooling out of the runtime environment.
-COPY requirements-test.txt .
-RUN pip install --no-cache-dir --target=/opt/test-deps -r requirements-test.txt
+RUN uv export --frozen --only-group test --no-emit-project \
+      --format requirements.txt --output-file /tmp/requirements-test.txt \
+    && /opt/venv/bin/python -m pip install --no-cache-dir \
+      --target=/opt/test-deps -r /tmp/requirements-test.txt
 
 COPY app ./app
 COPY tests ./tests
 
 # Run the complete test suite; a failure fails the Docker build.
-RUN PYTHONPATH=/opt/test-deps python -m pytest
+RUN PYTHONPATH=/opt/test-deps /opt/venv/bin/python -m pytest
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime

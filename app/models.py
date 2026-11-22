@@ -19,6 +19,7 @@ from .config import (
     BGE_QUERY_INSTRUCTION,
     BGE_REVISION,
     MAX_SEQ_LENGTH,
+    MODEL_REGISTRY,
     MINILM_DIMENSIONS,
     MINILM_MODEL_ID,
     MINILM_REVISION,
@@ -44,6 +45,11 @@ _MODEL_CACHE: Final[dict[str, ModelHandle]] = {}
 
 class ModelNotReadyError(RuntimeError):
     """Raised when a model has not finished loading."""
+
+
+def models_ready() -> bool:
+    """Return whether every registered model has been loaded successfully."""
+    return all(alias in _MODEL_CACHE for alias in MODEL_REGISTRY)
 
 
 def load_model(alias: str) -> ModelHandle:

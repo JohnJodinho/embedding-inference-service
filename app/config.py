@@ -93,7 +93,8 @@ class Settings:
     torch_num_threads: int = _env_int("TORCH_NUM_THREADS", 2)
     torch_num_interop_threads: int = _env_int("TORCH_NUM_INTEROP_THREADS", 1)
     max_request_bytes: int = _env_int("MAX_REQUEST_BYTES", 262_144)  # 256 KiB
-    max_texts_per_request: int = _env_int("MAX_TEXTS_PER_REQUEST", 64)
+    max_texts_per_request: int = _env_int("MAX_TEXTS_PER_REQUEST", 8)
+    max_bge_texts_per_request: int = _env_int("MAX_BGE_TEXTS_PER_REQUEST", 4)
     max_chars_per_text: int = _env_int("MAX_CHARS_PER_TEXT", 2048)
     max_tokens_per_text: int = _env_int("MAX_TOKENS_PER_TEXT", 512)
 
@@ -108,6 +109,7 @@ class Settings:
             "torch_num_interop_threads",
             "max_request_bytes",
             "max_texts_per_request",
+            "max_bge_texts_per_request",
             "max_chars_per_text",
             "max_tokens_per_text",
             "rag_rate_limit_per_min",
@@ -121,6 +123,12 @@ class Settings:
         if self.max_tokens_per_text > MAX_SEQ_LENGTH:
             raise ValueError(
                 f"max_tokens_per_text cannot exceed the model limit of {MAX_SEQ_LENGTH}"
+            )
+        if self.max_texts_per_request > self.max_batch_size:
+            raise ValueError("max_texts_per_request cannot exceed max_batch_size")
+        if self.max_bge_texts_per_request > self.max_texts_per_request:
+            raise ValueError(
+                "max_bge_texts_per_request cannot exceed max_texts_per_request"
             )
 
 

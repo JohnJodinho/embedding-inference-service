@@ -165,6 +165,11 @@ class InferenceBatchProcessor:
         for vector in vectors:
             validate_vector(vector, expected_dimensions)
         for item, start, end in ranges:
+            metrics.observe_scheduler_durations(
+                alias,
+                queue_wait[id(item)],
+                inference_ms,
+            )
             if not item.future.done():
                 item.future.set_result(
                     InferenceResult(
@@ -229,6 +234,11 @@ class InferenceBatchProcessor:
         error_code: str,
     ) -> None:
         for item, _start, _end in ranges:
+            metrics.observe_scheduler_durations(
+                alias,
+                queue_wait.get(id(item), 0),
+                inference_ms,
+            )
             log.error(
                 "scheduler.request_failed",
                 request_id=item.request_id,

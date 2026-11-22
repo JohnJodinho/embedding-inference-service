@@ -76,6 +76,79 @@ def test_pick_nonblocking_prefers_bge_but_serves_minilm(empty_scheduler):
     assert empty_scheduler._pick_nonblocking() == "minilm-384-v1"
 
 
+def test_scheduler_serves_minilm_under_continuous_bge_load(monkeypatch):
+    scheduler = InferenceScheduler(
+        replace(settings, micro_batch_window_ms=20)
+    )
+    encoded_aliases = []
+    monkeypatch.setattr(models_module, "get_model", lambda alias: object())
+
+    def encode(alias, texts, normalize_embeddings):
+        encoded_aliases.append(alias)
+        dimensions = 768 if alias == "bge-base-768-v1" else 384
+        return [[0.0] * dimensions for _ in texts]
+
+    monkeypatch.setattr(models_module, "encode_texts", encode)
+
+    async def run():
+        scheduler.start()
+        requests = [
+            asyncio.create_task(
+                scheduler.submit("bge-base-768-v1", ["bge"], False, "document")
+            )
+            for _ in range(6)
+        ]
+        requests.append(
+            asyncio.create_task(
+                scheduler.submit("minilm-384-v1", ["minilm"], False, None)
+            )
+        )
+        await asyncio.gather(*requests)
+        await scheduler.stop()
+
+    asyncio.get_event_loop().run_until_complete(run())
+
+    assert encoded_aliases[0] == "bge-base-768-v1"
+    assert "minilm-384-v1" in encoded_aliases[:2]
+
+
+def test_scheduler_never_exceeds_configured_inference_batch(monkeypatch):
+    scheduler = InferenceScheduler(
+        replace(settings, micro_batch_window_ms=10)
+    )
+    encoded_sizes = []
+    monkeypatch.setattr(models_module, "get_model", lambda alias: object())
+
+    def encode(alias, texts, normalize_embeddings):
+        encoded_sizes.append(len(texts))
+        dimensions = 768 if alias == "bge-base-768-v1" else 384
+        return [[0.0] * dimensions for _ in texts]
+
+    monkeypatch.setattr(models_module, "encode_texts", encode)
+
+    async def run():
+        scheduler.start()
+        requests = [
+            asyncio.create_task(
+                scheduler.submit("bge-base-768-v1", ["b"] * 4, False, "document")
+            )
+            for _ in range(3)
+        ]
+        requests.extend(
+            asyncio.create_task(
+                scheduler.submit("minilm-384-v1", ["m"] * 8, False, None)
+            )
+            for _ in range(3)
+        )
+        await asyncio.gather(*requests)
+        await scheduler.stop()
+
+    asyncio.get_event_loop().run_until_complete(run())
+
+    assert encoded_sizes
+    assert max(encoded_sizes) <= settings.max_batch_size
+
+
 def test_encode_resolves_all_texts_and_preserves_vector_order(
     empty_scheduler,
     monkeypatch,

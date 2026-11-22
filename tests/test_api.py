@@ -27,6 +27,8 @@ def test_openapi_documents_bearer_authentication():
     assert request_body["required"] is True
     body_schema = request_body["content"]["application/json"]["schema"]
     assert len(body_schema["oneOf"]) == 2
+    assert body_schema["oneOf"][0]["properties"]["input"]["anyOf"][1]["maxItems"] == 8
+    assert body_schema["oneOf"][1]["properties"]["input"]["anyOf"][1]["maxItems"] == 4
     assert "examples" in request_body["content"]["application/json"]
     assert "400" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
     assert "413" in schema["paths"]["/v1/embeddings"]["post"]["responses"]
@@ -37,6 +39,12 @@ def test_openapi_documents_bearer_authentication():
     assert "embedding" in schema["components"]["schemas"]["EmbeddingItem"]["properties"]
     response_properties = schema["components"]["schemas"]["EmbeddingsResponse"]["properties"]
     assert {"model", "dimensions", "data", "usage"} <= response_properties.keys()
+    model_properties = schema["components"]["schemas"]["ModelInfo"]["properties"]
+    assert {
+        "max_input_texts",
+        "max_tokens_per_text",
+        "max_chars_per_text",
+    } <= model_properties.keys()
     assert schema["paths"]["/health/live"]["get"]["responses"]["200"]["content"] == {
         "text/plain": {"schema": {"type": "string"}}
     }
@@ -55,6 +63,10 @@ def test_models_list(client, rag_headers):
         assert item["dimensions"] == cfg["dimensions"]
         assert item["model_id"] == cfg["model_id"]
         assert item["revision"] == cfg["revision"]
+        expected_limit = 4 if item["alias"] == "bge-base-768-v1" else 8
+        assert item["max_input_texts"] == expected_limit
+        assert item["max_tokens_per_text"] > 0
+        assert item["max_chars_per_text"] > 0
 
 
 def test_models_list_requires_auth(client):
@@ -122,6 +134,20 @@ def test_embeddings_bge_document_no_prefix(client, zit_headers):
     )
     assert response.status_code == 200
     assert len(response.json()["data"]) == 2
+
+
+def test_embeddings_bge_rejects_batch_above_model_limit(client, zit_headers):
+    response = client.post(
+        "/v1/embeddings",
+        headers=zit_headers,
+        json={
+            "model": "bge-base-768-v1",
+            "input": ["one", "two", "three", "four", "five"],
+            "input_type": "document",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json() == {"error": "too_many_texts"}
 
 
 def test_embeddings_unknown_model(client, rag_headers):
@@ -256,6 +282,31 @@ def test_embeddings_enforces_token_limit(client, rag_headers, monkeypatch):
     assert response.json() == {"error": "too_many_tokens"}
 
 
+def test_token_counting_runs_off_the_event_loop(monkeypatch):
+    import asyncio
+    import threading
+
+    import app.embeddings_api as embeddings_api_module
+    from app.schemas import EmbeddingRequest
+
+    caller_thread = threading.get_ident()
+    tokenizer_threads = []
+    monkeypatch.setattr(
+        embeddings_api_module,
+        "count_tokens",
+        lambda alias, text: tokenizer_threads.append(threading.get_ident()) or 1,
+    )
+
+    async def run():
+        await embeddings_api_module._validate_token_limits(
+            EmbeddingRequest(model="minilm-384-v1", input="hello")
+        )
+
+    asyncio.run(run())
+    assert tokenizer_threads
+    assert tokenizer_threads[0] != caller_thread
+
+
 def test_request_id_is_generated_and_returned(client):
     response = client.get("/health/live")
     assert response.status_code == 200
@@ -315,3 +366,11 @@ def test_metrics_requires_auth(client, rag_headers):
 
     response = client.get("/metrics", headers=rag_headers)
     assert response.status_code == 200
+
+
+def test_metrics_exports_latency_histograms_and_queue_gauges(client, rag_headers):
+    response = client.get("/metrics", headers=rag_headers)
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "# TYPE embedding_request_duration_seconds histogram" in response.text
+    assert 'embedding_queue_depth{model="bge-base-768-v1"}' in response.text

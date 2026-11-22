@@ -4,6 +4,9 @@ Cline must consult the current official documentation before implementation. Do 
 
 | Area | Official reference | Required use |
 |---|---|---|
+| uv projects and lockfiles | https://docs.astral.sh/uv/concepts/projects/layout/ | Define direct runtime/test dependencies and commit the resolved lockfile |
+| uv project sync | https://docs.astral.sh/uv/concepts/projects/sync/ | Install the frozen runtime environment and export isolated test dependencies |
+| uv dependency sources | https://docs.astral.sh/uv/concepts/indexes/ | Pin PyTorch to its explicit CPU wheel index |
 | Hugging Face Docker Spaces | https://huggingface.co/docs/hub/spaces-sdks-docker | Space YAML metadata, port 7860, Docker build and runtime secrets |
 | Hugging Face Space configuration | https://huggingface.co/docs/hub/spaces-config-reference | Validate supported Space configuration fields |
 | FastAPI lifespan | https://fastapi.tiangolo.com/advanced/events/ | Use lifespan context; avoid deprecated startup/shutdown event handlers |
@@ -32,7 +35,7 @@ Do not claim the Space entitlement or hardware is guaranteed by a rename. The in
 ## Required verification record
 
 ### Date checked
-2026-11-21
+2026-11-22
 
 ### Pinned runtime Python and package versions (Python 3.11)
 | Package | Pinned version | Source |
@@ -40,10 +43,21 @@ Do not claim the Space entitlement or hardware is guaranteed by a rename. The in
 | fastapi | 0.165.0 | https://pypi.org/pypi/fastapi/json |
 | uvicorn | 0.54.0 | https://pypi.org/pypi/uvicorn/json |
 | sentence-transformers | 6.3.0 | https://pypi.org/pypi/sentence-transformers/json |
-| torch | 2.15.0 | https://pypi.org/pypi/torch/json |
+| torch | 2.15.0 CPU build | https://download.pytorch.org/whl/cpu/torch/ |
 
-Test-only dependencies are isolated from the runtime image in
-`requirements-test.txt`:
+Direct dependencies are declared in `pyproject.toml`; `uv.lock` records the
+complete resolved dependency graph and artifact hashes for the Python 3.11
+deployment target. The Docker build uses the frozen lock and exports only the
+test dependency group into a separate target directory, keeping test tooling
+out of the runtime image.
+
+The lock generator is pinned in the Docker build:
+
+| Tool | Pinned version | Source |
+|------|---------------|--------|
+| uv | 0.13.9 | https://pypi.org/pypi/uv/json |
+
+Test-only direct dependencies:
 
 | Package | Pinned version | Source |
 |---------|---------------|--------|
@@ -55,9 +69,12 @@ official releases API on 2026-11-21. The workflow's `contents: read`
 permission is sufficient because deployment authenticates directly to the HF
 Space with the repository's `HF_TOKEN` secret.
 
-Note: `uvx`/`uv` are not available in this environment, so the FastAPI AI-agent
-skill could not be installed via `uvx library-skills`; the official FastAPI
-documentation was used directly instead.
+`uvx` was unavailable, so the FastAPI AI-agent skill could not be installed via
+`uvx library-skills`; the official FastAPI documentation was used directly.
+Pinned uv 0.13.9 was installed in the ignored project environment only to
+generate and verify the lockfile. No ML packages or model weights were
+installed locally. A Linux-targeted uv dry run selected `torch==2.15.0+cpu`
+without CUDA or Triton packages.
 
 ### Immutable model commit hashes (resolved from official HF model APIs)
 | Alias | Model ID | Revision (commit hash) | Dimensions | Licence |
@@ -79,6 +96,10 @@ significant). Prepended to query inputs only; document inputs receive no prefix.
 - FastAPI lifespan: https://fastapi.tiangolo.com/advanced/events/
 - FastAPI testing: https://fastapi.tiangolo.com/advanced/async-tests/
 - FastAPI response models: https://fastapi.tiangolo.com/tutorial/response-model/
+- uv project layout and lockfiles: https://docs.astral.sh/uv/concepts/projects/layout/
+- uv project sync and dependency groups: https://docs.astral.sh/uv/concepts/projects/sync/
+- uv package indexes: https://docs.astral.sh/uv/concepts/indexes/
+- PyTorch CPU installation selector: https://pytorch.org/get-started/locally/
 - Sentence Transformers model API: https://www.sbert.net/docs/package_reference/sentence_transformer/model.html
 - Hugging Face tokenizer API: https://huggingface.co/docs/transformers/en/main_classes/tokenizer
 - Sentence Transformers migration guide: https://sbert.net/docs/migration_guide.html
@@ -92,4 +113,7 @@ significant). Prepended to query inputs only; document inputs receive no prefix.
   the Space settings before tuning CPU thread or queue limits.
 - No model IDs, revisions, dimensions, licences, or API parameter uncertainties
   remain.
+- Full local tests, ML dependency installation and model downloads remain
+  intentionally prohibited by the project rules; the HF Docker build is the
+  authoritative verification environment.
 

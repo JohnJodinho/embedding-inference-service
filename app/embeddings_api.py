@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Final
@@ -83,8 +84,13 @@ def _validate_payload(
             embedding_request.model,
             len(embedding_request.texts),
         )
+    request_text_limit = (
+        settings.max_bge_texts_per_request
+        if embedding_request.model == "bge-base-768-v1"
+        else settings.max_texts_per_request
+    )
     try:
-        validate_texts(embedding_request.texts)
+        validate_texts(embedding_request.texts, max_texts=request_text_limit)
     except HTTPException as exc:
         code = exc.detail if isinstance(exc.detail, str) else "invalid_input"
         raise APIError(
@@ -97,7 +103,7 @@ def _validate_payload(
     return embedding_request, model_config
 
 
-def _validate_token_limits(request: EmbeddingRequest) -> None:
+def _validate_token_limits_sync(request: EmbeddingRequest) -> None:
     for text in request.texts:
         try:
             prepared_text = prepare_input(request.model, request.input_type, text)
@@ -126,6 +132,10 @@ def _validate_token_limits(request: EmbeddingRequest) -> None:
                 request.model,
                 len(request.texts),
             )
+
+
+async def _validate_token_limits(request: EmbeddingRequest) -> None:
+    await asyncio.to_thread(_validate_token_limits_sync, request)
 
 
 async def _submit_for_inference(
@@ -262,7 +272,7 @@ async def embeddings(request: Request) -> dict[str, object] | JSONResponse:
     try:
         payload = await _read_payload(request)
         embedding_request, model_config = _validate_payload(payload)
-        _validate_token_limits(embedding_request)
+        await _validate_token_limits(embedding_request)
         result = await _submit_for_inference(
             embedding_request,
             request_id,
@@ -271,7 +281,9 @@ async def embeddings(request: Request) -> dict[str, object] | JSONResponse:
     except APIError as exc:
         return reject_request(exc, request_id, client_label, started_at)
 
+    total_ms = (time.monotonic() - started_at) * 1000
     metrics.inc_request(ok=True)
+    metrics.observe_request_duration(embedding_request.model, total_ms)
     log.info(
         "embeddings.ok",
         request_id=request_id,
@@ -280,7 +292,7 @@ async def embeddings(request: Request) -> dict[str, object] | JSONResponse:
         batch_size=len(embedding_request.texts),
         queue_wait_ms=result.queue_wait_ms,
         inference_ms=result.inference_ms,
-        total_ms=round((time.monotonic() - started_at) * 1000, 2),
+        total_ms=round(total_ms, 2),
         status="ok",
         error_code=None,
     )

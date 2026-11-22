@@ -33,6 +33,9 @@ def reject_request(
     started_at: float,
 ) -> JSONResponse:
     metrics.inc_request(ok=False)
+    total_ms = (time.monotonic() - started_at) * 1000
+    if error.model_alias is not None:
+        metrics.observe_request_duration(error.model_alias, total_ms)
     if error.status_code == 429:
         metrics.inc_rate_limited()
     log.warning(
@@ -43,7 +46,7 @@ def reject_request(
         batch_size=error.batch_size,
         queue_wait_ms=round(error.queue_wait_ms, 2),
         inference_ms=round(error.inference_ms, 2),
-        total_ms=round((time.monotonic() - started_at) * 1000, 2),
+        total_ms=round(total_ms, 2),
         status="error",
         error_code=error.code,
     )

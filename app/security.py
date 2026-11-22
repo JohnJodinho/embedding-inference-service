@@ -172,10 +172,11 @@ def validate_request_size(body_bytes: int) -> None:
         )
 
 
-def validate_texts(texts: list[str]) -> None:
+def validate_texts(texts: list[str], max_texts: int | None = None) -> None:
     if not texts:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty_input")
-    if len(texts) > settings.max_texts_per_request:
+    text_limit = max_texts if max_texts is not None else settings.max_texts_per_request
+    if len(texts) > text_limit:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="too_many_texts",

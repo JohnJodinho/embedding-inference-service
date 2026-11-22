@@ -8,7 +8,7 @@ from typing import Final
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .config import MODEL_REGISTRY
+from .config import MODEL_REGISTRY, settings
 from .logging import log
 from .metrics import metrics
 from .schemas import DetailErrorResponse, HealthResponse, ModelsResponse
@@ -37,8 +37,7 @@ async def live() -> PlainTextResponse:
 )
 async def ready() -> JSONResponse | dict[str, str]:
     """Report readiness only after both models and the worker are available."""
-    aliases = ("minilm-384-v1", "bge-base-768-v1")
-    if all(alias in models._MODEL_CACHE for alias in aliases) and scheduler.ready():
+    if models.models_ready() and scheduler.ready():
         return {"status": "ready"}
     return JSONResponse(status_code=503, content={"status": "not_ready"})
 
@@ -80,6 +79,13 @@ async def list_models(request: Request) -> dict[str, object]:
                 "revision": config["revision"],
                 "dimensions": config["dimensions"],
                 "license": config["license"],
+                "max_input_texts": (
+                    settings.max_bge_texts_per_request
+                    if alias == "bge-base-768-v1"
+                    else settings.max_texts_per_request
+                ),
+                "max_tokens_per_text": settings.max_tokens_per_text,
+                "max_chars_per_text": settings.max_chars_per_text,
             }
             for alias, config in MODEL_REGISTRY.items()
         ],
@@ -102,8 +108,6 @@ async def metrics_endpoint(request: Request) -> PlainTextResponse:
     started_at = time.monotonic()
     request_id = request.state.request_id
     client_label = authenticate(request, None)
-    snapshot = metrics.snapshot()
-    lines = [f"{key} {value}" for key, value in snapshot.items()]
     log.info(
         "metrics.read",
         request_id=request_id,
@@ -116,4 +120,8 @@ async def metrics_endpoint(request: Request) -> PlainTextResponse:
         status="ok",
         error_code=None,
     )
-    return PlainTextResponse("\n".join(lines) + "\n", status_code=200)
+    return PlainTextResponse(
+        metrics.prometheus_text(),
+        status_code=200,
+        media_type="text/plain; version=0.0.4",
+    )

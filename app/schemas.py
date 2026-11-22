@@ -38,6 +38,9 @@ class ModelInfo(BaseModel):
     revision: str
     dimensions: int
     license: str
+    max_input_texts: int
+    max_tokens_per_text: int
+    max_chars_per_text: int
 
 
 class ModelsResponse(BaseModel):
@@ -115,7 +118,7 @@ EMBEDDING_REQUEST_SCHEMA: dict[str, object] = {
                         {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": settings.max_texts_per_request,
+                            "maxItems": settings.max_bge_texts_per_request,
                             "items": {
                                 "type": "string",
                                 "minLength": 1,

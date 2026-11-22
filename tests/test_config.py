@@ -52,3 +52,15 @@ def test_token_limit_cannot_exceed_model_sequence_length():
 
     with pytest.raises(ValueError, match="model limit"):
         replace(settings, max_tokens_per_text=513)
+
+
+def test_request_batch_limits_fit_scheduler_capacity():
+    from dataclasses import replace
+
+    from app.config import settings
+
+    with pytest.raises(ValueError, match="max_batch_size"):
+        replace(settings, max_texts_per_request=9, max_batch_size=8)
+
+    with pytest.raises(ValueError, match="max_texts_per_request"):
+        replace(settings, max_bge_texts_per_request=9)

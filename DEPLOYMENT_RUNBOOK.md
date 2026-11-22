@@ -40,9 +40,9 @@ Every push to GitHub `main` triggers the workflow:
 3. Force-replace HF `main` with GitHub `main`; the Space is an intentional
    deployment mirror, not a branch to merge into.
 4. Hugging Face starts a Docker build.
-5. The Docker build installs pinned runtime dependencies, downloads both pinned
-   models, and runs the complete test suite with real-model smoke checks. No test
-   is skipped.
+5. The Docker build installs the frozen runtime dependency graph from
+   `uv.lock`, downloads both pinned models, and runs the complete test suite
+   with real-model smoke checks. No test is skipped.
 6. If any test fails, the Docker build fails and the new image is not deployed.
 7. If the build succeeds, the Space starts the API.
 
@@ -66,6 +66,11 @@ Never paste API keys into a command that will be saved in shell history or into 
 
 Make changes in the local Git working tree, review them, commit and push to `main`. Do not edit code directly in the Hugging Face Space. GitHub remains the source of truth.
 
+When changing direct dependencies, edit `pyproject.toml` and run
+`uv lock --python 3.11`;
+commit the updated `uv.lock` with the dependency change. The Docker build uses
+the lock in frozen mode and does not resolve new versions during deployment.
+
 ## Failure diagnosis
 
 - **GitHub Action failed:** inspect the Actions log; check `HF_TOKEN`, repository target and Git push permissions.
@@ -76,6 +81,10 @@ Make changes in the local Git working tree, review them, commit and push to `mai
 - **Embedding endpoint returns 429:** client rate limit reached; wait and retry according to `Retry-After`.
 - **Embedding endpoint returns 503:** queue full, model not ready or worker unavailable; inspect queue and worker logs.
 - **Slow requests:** inspect queue wait separately from inference time. Tune batch size and CPU thread settings based on measured Space performance.
+- **Batch requests:** default limits are 8 MiniLM texts and 4 BGE texts per
+  request. Inspect per-model latency histograms and queue-depth gauges at
+  `/metrics` before changing these limits; larger BGE batches produce larger
+  responses and can monopolize the single CPU inference worker.
 
 ## Recovery
 

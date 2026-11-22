@@ -110,6 +110,15 @@ class InferenceScheduler:
         """Enqueue a request and bound its total wait time."""
         if not self.ready():
             raise SchedulerNotReadyError("Inference scheduler is not ready")
+        if alias not in self._queues:
+            raise ValueError(f"Unknown model alias: {alias}")
+        text_limit = (
+            self._settings.max_bge_texts_per_request
+            if alias == "bge-base-768-v1"
+            else self._settings.max_texts_per_request
+        )
+        if not texts or len(texts) > text_limit:
+            raise ValueError(f"Request must contain between 1 and {text_limit} texts")
         future = asyncio.get_running_loop().create_future()
         item = create_request_item(
             alias,
@@ -139,6 +148,7 @@ class InferenceScheduler:
                 queue_size=queue.qsize(),
             )
             raise QueueFullError(f"Queue full for model {alias}") from exc
+        metrics.set_queue_depth(alias, queue.qsize())
         self._wakeup.set()
         return await self._wait_for_result(item)
 
@@ -198,25 +208,45 @@ class InferenceScheduler:
         collected: list[tuple[str, _RequestItem]] = []
         text_count = 0
         deadline = time.monotonic() + self._settings.micro_batch_window_ms / 1000
-        while not self._stopping:
-            if collected and text_count >= self._settings.max_batch_size:
-                break
-            alias = self._pick_nonblocking()
-            if alias is None:
-                if await self._wait_for_microbatch(deadline):
-                    continue
-                break
-            item = self._queues[alias].get_nowait()
-            if item.future.cancelled():
-                continue
-            self._consecutive_bge = (
-                self._consecutive_bge + 1
-                if alias == "bge-base-768-v1"
-                else 0
+        while self._should_collect(text_count):
+            alias = self._pick_nonblocking(
+                remaining_texts=self._settings.max_batch_size - text_count
             )
+            if alias is None:
+                if self._should_yield_to_minilm(bool(collected)):
+                    break
+                if not await self._wait_for_microbatch(deadline):
+                    break
+                continue
+            item = self._dequeue(alias)
+            if item is None:
+                continue
             collected.append((alias, item))
             text_count += len(item.texts)
         return collected
+
+    def _should_collect(self, text_count: int) -> bool:
+        return not self._stopping and text_count < self._settings.max_batch_size
+
+    def _should_yield_to_minilm(self, has_collected: bool) -> bool:
+        return (
+            has_collected
+            and self._consecutive_bge >= MAX_CONSECUTIVE_BGE
+            and not self._minilm_queue.empty()
+        )
+
+    def _dequeue(self, alias: str) -> _RequestItem | None:
+        queue = self._queues[alias]
+        item = queue.get_nowait()
+        metrics.set_queue_depth(alias, queue.qsize())
+        if item.future.cancelled():
+            return None
+        self._consecutive_bge = (
+            self._consecutive_bge + len(item.texts)
+            if alias == "bge-base-768-v1"
+            else 0
+        )
+        return item
 
     async def _wait_for_work(self) -> bool:
         while not self._stopping:
@@ -241,15 +271,23 @@ class InferenceScheduler:
             return False
         return not self._stopping
 
-    def _pick_nonblocking(self) -> str | None:
-        """Prefer BGE but serve MiniLM after a bounded run of BGE requests."""
-        minilm_ready = not self._minilm_queue.empty()
-        bge_ready = not self._bge_queue.empty()
+    def _pick_nonblocking(self, remaining_texts: int | None = None) -> str | None:
+        """Prefer BGE while respecting batch capacity and a text-based fairness limit."""
+        minilm_ready = self._queue_head_fits("minilm-384-v1", remaining_texts)
+        bge_ready = self._queue_head_fits("bge-base-768-v1", remaining_texts)
         if bge_ready and (not minilm_ready or self._consecutive_bge < MAX_CONSECUTIVE_BGE):
             return "bge-base-768-v1"
         if minilm_ready:
             return "minilm-384-v1"
         return None
+
+    def _queue_head_fits(self, alias: str, remaining_texts: int | None) -> bool:
+        queue = self._queues[alias]
+        if queue.empty():
+            return False
+        if remaining_texts is None:
+            return True
+        return len(queue._queue[0].texts) <= remaining_texts
 
     async def _encode_and_resolve(
         self,
@@ -269,6 +307,8 @@ class InferenceScheduler:
         for queue in self._queues.values():
             while not queue.empty():
                 queued.append(queue.get_nowait())
+        for alias, queue in self._queues.items():
+            metrics.set_queue_depth(alias, queue.qsize())
         fail_future(queued, error)
 
 

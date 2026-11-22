@@ -42,7 +42,14 @@ Load models in FastAPI lifespan startup. Readiness remains false until both mode
 
 Use two bounded queues and one inference worker. BGE gets preferential scheduling because it serves the public-facing ZIT assistant, while MiniLM traffic is expected to be low. Use a fairness rule so MiniLM cannot starve.
 
-Batch multiple texts from a request. Micro-batch across waiting requests for a short, configurable collection window. Set strict queue capacity, per-request batch limits and timeouts. The total request deadline includes queue wait and inference; model inference has its own deadline. When capacity is exhausted, reject quickly with HTTP 503 and a retry hint. Do not create an unbounded backlog.
+Batch multiple texts from a request. The default request cap is 8 MiniLM texts
+and 4 BGE texts; each cap must not exceed the scheduler's maximum inference
+batch size. Micro-batch across waiting requests for a short, configurable
+collection window without exceeding that batch size. Set strict queue capacity,
+per-request batch limits and timeouts. The total request deadline includes queue
+wait and inference; model inference has its own deadline. When capacity is
+exhausted, reject quickly with HTTP 503 and a retry hint. Do not create an
+unbounded backlog.
 
 The single inference thread runs model encoding outside the async event loop. Timed-out Python thread work cannot be forcibly cancelled, so the worker waits for it to finish before starting another batch; this preserves the one-inference-at-a-time guarantee. Limit PyTorch intra-op and inter-op CPU threads to configured values. Benchmark these values on the actual Space after deployment; do not assume local performance.
 
@@ -62,6 +69,9 @@ Both model revisions must be immutable commit hashes. The service rejects unknow
 - BGE document input receives no query instruction.
 - BGE document and query vectors must use the same model revision and compatible normalization.
 - Input order is preserved in the response.
+- Oversized batches are rejected with `400`; callers should split document
+  collections into bounded requests rather than create an unbounded server-side
+  fan-out or response.
 - Validate the model-tokenizer count on the final formatted input (including special tokens and the BGE query prefix), without truncation. The configured token ceiling cannot exceed the models' 512-token sequence limit.
 - Every response reports the model alias and dimensions.
 
@@ -74,6 +84,9 @@ Both model revisions must be immutable commit hashes. The service rejects unknow
 - A single model inference error must not silently return a fabricated vector.
 - Do not silently switch models or dimensions.
 - Structured logs include request ID, client label, model alias, input count, queue wait, inference duration, total duration and status.
+- Metrics include fixed-bucket per-model request, queue-wait and inference
+  histograms, plus queue-depth gauges. Labels are limited to registered model
+  aliases to avoid high-cardinality telemetry.
 - Never log raw input, API keys, authorization headers or embeddings.
 
 ## Resource expectations
