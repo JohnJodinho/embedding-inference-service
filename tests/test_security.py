@@ -129,7 +129,11 @@ def test_validate_texts_too_many(monkeypatch):
     monkeypatch.setattr(
         security_module,
         "settings",
-        replace(security_module.settings, max_texts_per_request=2),
+        replace(
+            security_module.settings,
+            max_texts_per_request=2,
+            max_bge_texts_per_request=2,
+        ),
     )
     from fastapi import HTTPException
 
