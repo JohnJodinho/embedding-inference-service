@@ -101,6 +101,13 @@ intentional deployment mirror: the workflow force-replaces its tree with GitHub
 `main` so no merges or stale Space files are retained. The token is sent through
 a masked Git HTTP authorization header, not embedded in a remote URL.
 
+The `Keep Hugging Face Space warm` workflow checks liveness and readiness every
+30 minutes and can also be run manually. It uses only the public health routes,
+so no API key or Hugging Face token is needed. This is best-effort: GitHub
+scheduled runs may be delayed, and Hugging Face may still sleep free hardware.
+For continuously available compute, use paid Space hardware as described in
+[Hugging Face's lifecycle documentation](https://huggingface.co/docs/hub/spaces-overview#lifecycle-management).
+
 The Hugging Face Docker build installs pinned runtime dependencies, downloads
 both pinned models, runs all tests with real-model smoke checks (none are
 skipped), and only deploys if all tests pass. Application-source changes do not
